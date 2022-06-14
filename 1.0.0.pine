@@ -1,0 +1,128 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © boitoki
+
+//@version=5
+indicator("Barbwire", overlay=true, precision=2, max_boxes_count=200, max_lines_count=200)
+
+import boitoki/VolatilityChecker/2 as v
+
+//////////////
+// FUNCTION //
+
+f_renderBox (_show, _start, _processing, _end, _mode, _min, _show_extend, _extend, _border_width, _border_color, _bgcolor) =>
+    var box barb_box = na
+    var line top = na
+    var line bot = na
+    var float y1 = na
+    var float y2 = na
+    line_style = line.style_dotted
+
+    if _mode == 'osc'
+        y1 := 100.0
+        y2 := 0.0
+
+    if _start
+        y1 := _mode == 'chart' ? high : y1
+        y2 := _mode == 'chart' ? low  : y2
+        barb_box := box.new(bar_index, y1, bar_index, y2, _border_color, _border_width, line.style_solid, bgcolor=_bgcolor)
+    
+    if _processing
+        y1 := _mode == 'chart' ? math.max(y1, high) : y1
+        y2 := _mode == 'chart' ? math.min(y2, low)  : y2
+        box.set_top(barb_box, y1)
+        box.set_bottom(barb_box, y2)
+        box.set_right(barb_box, bar_index)
+    
+    if _end
+        box.set_right(barb_box, bar_index)
+        
+        width = math.abs(box.get_right(barb_box) - box.get_left(barb_box))
+
+        if width < _min
+            box.delete(barb_box)
+        
+        if _show_extend and width >= _min
+            x1 = bar_index 
+            x2 = bar_index + math.round(width * _extend)
+            //p  = syminfo.mintick * 10 * 2
+            //line.new(x1, y1 + p, x2, y1 + p, color=_border_color, width=1, style=line_style)
+            //line.new(x1, y2 - p, x2, y2 - p, color=_border_color, width=1, style=line_style)
+            box.new(x1, y1, x2, y2, _border_color, 1, line_style, bgcolor=color.new(_bgcolor, 96))
+
+        y1 := na, y2 := na
+
+
+barb_func (_len) =>
+    [v_open, v_close] = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, [open, close])
+
+    oc_width = math.abs(v_open - hlc3)
+    hl_width = math.abs(high - low)
+
+    oc = ta.sma(ta.stoch(oc_width, oc_width, oc_width, _len), 1)
+    hl = ta.sma(ta.stoch(hl_width, hl_width, hl_width, math.round(_len * 0.3)), 1)
+
+    [oc, hl]
+
+////////////
+// INPUTS //
+
+i_len = input.int(50, 'Period')
+i_lv = input.int(20, 'Level', minval=1)
+i_min = input.int(3, 'Min period', minval=0)
+i_calc_by_option1 = 'Open/Close'
+i_calc_by_option2 = 'with High/Low'
+i_calc_by = str.lower(input.string(i_calc_by_option2, 'Calculated by', options=[i_calc_by_option1, i_calc_by_option2], inline='calc'))
+i_use_voc = input.bool(false, 'VolatilityChecker', inline='calc')
+i_mode = 'chart' //input.string('chart', 'Mode', options=['osc', 'chart'])
+i_show_extend = input.bool(false, 'Box extend', inline='extend')
+i_extend = input.float(1.6, '', minval=1.0, step=0.1, inline='extend')
+
+i_border_width = input.int(2, 'Border width', minval=0, group='style')
+i_boxcolor = input.color(color.new(color.orange, 20), 'Box color', group='style')
+i_bgcolor = input.color(color.new(color.orange, 80), 'Box bg color', group='style')
+
+i_show_barcolor = input.bool(false, 'Bar color', group='options', inline='barcolor')
+i_barcolor = input.color(color.white, '', group='options', inline='barcolor')
+
+//////////
+// CALC //
+[oc_barb, hl_barb] = barb_func(i_len)
+avg_barb = math.avg(oc_barb, oc_barb, oc_barb, oc_barb, hl_barb)
+v_is_low_volatility = v.is_low(7, 3, 20, 2)
+
+////////////////
+// CONDITIONS //
+
+is_barb = oc_barb <= i_lv
+
+if i_calc_by == str.lower(i_calc_by_option2)
+    is_barb := is_barb and hl_barb <= i_lv
+
+if i_use_voc
+    is_barb := is_barb and v_is_low_volatility
+
+barb_start  = is_barb and (not is_barb[1])
+barb_end    = (not is_barb) and is_barb[1]
+
+alertcondition(barb_start, "Barb wire start", "Barb wire start")
+alertcondition(barb_end, "Barb wire end", "Barb wire end")
+
+///////////////
+// RENDERING //
+
+f_renderBox(true, barb_start, is_barb, barb_end, i_mode, i_min, i_show_extend, i_extend, i_border_width, i_boxcolor, i_bgcolor)
+
+barcolor(i_show_barcolor and is_barb ? i_barcolor : na)
+
+//////////////
+// PLOTTING //
+
+col = is_barb ? color.gray : color.aqua
+plot_display = display.none
+
+plot(hl_barb, 'HL', style=plot.style_columns, color=color.new(col, 80), display=plot_display)
+plot(oc_barb, 'OC', style=plot.style_columns, color=col, display=plot_display)
+plot(ta.wma(ta.ema(avg_barb, 5), 3), color=color.maroon, linewidth=2, display=plot_display)
+
+hline(i_lv, linestyle=hline.style_dotted, display=plot_display)
+hline( 0, linestyle=hline.style_solid, display=plot_display)
