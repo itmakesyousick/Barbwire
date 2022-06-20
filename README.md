@@ -1,5 +1,15 @@
 # Barbwire
 
+## HR
+```
+f_HR (_open, _close) => 
+    math.max(_open, _close) - math.min(_open, _close)
+
+use_heikinashi = input.bool(true, 'Use Heikin-Ahi')
+
+HR = f_HR(use_heikinashi ? hopen : open, use ? hclose : close)
+```
+
 ## Min. ID
 ```
 analysis_len = input.int(150)
