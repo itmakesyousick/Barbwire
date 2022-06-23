@@ -1,0 +1,339 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © boitoki
+
+//@version=5
+indicator("Barbwire", overlay=true, precision=2, max_boxes_count=300, max_lines_count=500)
+
+import boitoki/AwesomeColor/5 as ac
+import boitoki/ma_function/3 as ma
+import boitoki/RCI/4 as rci_func
+
+[hopen, hclose] = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, [open, close])
+
+////////////
+// DEFINE //
+
+GP3                 = 'MOMENTUM'
+option_source1      = 'Open-Close'
+option_source2      = 'High-Low'
+
+//////////////
+// FUNCTION //
+
+//
+oc2 (_open, _close) => math.avg(math.max(_open, _close), math.min(_open, _close))
+
+//
+hoc2 () => math.avg(math.max(hopen, hclose), math.min(hopen, hclose))
+
+//
+f_HR (_open, _close) =>  math.max(_open, _close) - math.min(_open, _close)
+
+//
+f_get_data (_source, _len) =>
+    data = array.new<float>()
+
+    for i = 1 to _len
+        array.push(data, _source[i])
+    
+    data
+
+//
+f_renderBox (_show, _start, _processing, _end, _min, _border_width, _border_color, _bgcolor) =>
+    var box barb_box = na
+    var label txt = na
+    var line top = na
+    var line bot = na
+    var float y1 = na
+    var float y2 = na
+    var int x1 = na
+    line_style = line.style_dotted
+
+    if _start
+        x1 := bar_index
+        y1 := high
+        y2 := low
+        barb_box := box.new(x1, y1, x1, y2, _border_color, _border_width, line.style_solid, bgcolor=_bgcolor)
+        txt := label.new(x1, y1, '•', color=_border_color, textcolor=ac.panda('lightergray'), size=size.tiny)
+    
+    if _processing
+        y1 := math.max(y1, high)
+        y2 := math.min(y2, low)
+        box.set_top(barb_box, y1)
+        box.set_bottom(barb_box, y2)
+        box.set_right(barb_box, bar_index)
+        label.set_y(txt, y1)
+        label.set_text(txt, '•••')
+    
+    if _end
+        box.set_right(barb_box, bar_index)
+        label.delete(txt)
+        
+        width = math.abs(box.get_right(barb_box) - box.get_left(barb_box))
+
+        if width < _min
+            box.delete(barb_box)
+
+        y1 := na, y2 := na
+
+//
+//
+f_barb_roc (_src, _len) =>
+    roc_arr = array.new<float>(_len)
+    roc = ta.roc(_src, 2)
+    roc_moved = math.abs(roc - roc[3])
+    
+    for i = 1 to _len
+        array.push(roc_arr, roc_moved[i])
+
+    min_roc_value = array.min(roc_arr)
+    min_roc_value := array.median(roc_arr)
+    
+    roc_moved <= min_roc_value
+
+// 
+f_barb_roc2 (_len) =>
+    height = math.max(hopen, hclose) - math.min(hopen, hclose)
+    roc = ta.roc(height, _len)
+    
+    roc <= 0
+
+//
+f_barb_stoch (_source, _len, _lv) =>
+    v = ta.sma(ta.stoch(_source, _source, _source, _len), 1)
+    v <= _lv
+
+//
+barb_func (_source, _len, _sens) =>
+    arr = array.new<float>(_len)
+    new_arr = array.new<float>()
+
+    for i = 1 to _len
+        array.push(arr, _source[i])
+
+    min_value = array.min(arr)
+    min_value := array.percentile_nearest_rank(arr, _sens)
+    min_value := math.max(min_value, syminfo.mintick * 2)
+
+    in_barb = _source <= (min_value)
+
+    in_barb
+
+////////////
+// INPUTS //
+
+i_source_type       = input.string(option_source1, 'Source', options=[option_source1, option_source2])
+i_len               = input.int(50, 'Length')
+i_min               = input.int(3, 'Num. of minimum bars', minval=0)
+
+// LOGIC
+i_barb_type         = input.string('Stdev', 'Calculated by', options=['Rank', 'Stdev', 'ROC', 'Stochastic'])
+i_sensitivity       = input.int(10, '• Nearest rank %', minval=1, maxval=100)
+i_stoch_len         = input.int(14, '• Stochastic length', minval=1, maxval=100)
+i_filter_roc        = input.bool(false, "Directional Exclusion by ROC", group='Filter')
+
+i_spot_minid        = input.bool(false, 'Min. ID', group='SPOT FLAGS')
+i_spot_smnr         = input.bool(false, 'Sm. NR', group='SPOT FLAGS')
+i_spot_lrwr         = input.bool(false, 'Lr. WR', group='SPOT FLAGS')
+i_spot_mom          = input.bool(false, 'Mom.', group='SPOT FLAGS')
+
+// STYLE
+i_border_width      = input.int(0, '', minval=0, group='style', inline='style', tooltip='Border width / color / bgcolor')
+i_boxcolor          = input.color(color.new(#E6DB74, 20), '', group='style', inline='style')
+i_bgcolor           = input.color(color.new(#E6DB74, 30), '', group='style', inline='style')
+
+i_rci_length        = input.int(14, 'RCI', minval=1, group=GP3, inline='rci', tooltip="Length / Ma type / Smoothing")
+i_rci_matype        = input.string('EMA', '', options=['ALMA', 'AMA', 'DEMA', 'EMA', 'HMA', 'KAMA', 'LSMA', 'MAV', 'RMA', 'SMA', 'SWMA', 'TEMA', 'TMA', 'VWMA', 'WMA', 'ZLEMA'], group=GP3, inline='rci')
+i_rci_smooth        = input.int(3, '', group=GP3, minval=1, inline='rci')
+i_source            = math.max(hopen, hclose) - math.min(hopen, hclose)
+
+i_mom_length        = input.int(3, 'MOM', minval=1, group=GP3, inline='mom', tooltip='Length / Ma type / Smoothing')
+i_mom_matype        = input.string('MAV', '', options=['ALMA', 'AMA', 'DEMA', 'EMA', 'HMA', 'KAMA', 'LSMA', 'MAV', 'RMA', 'SMA', 'SWMA', 'TEMA', 'TMA', 'VWMA', 'WMA', 'ZLEMA'], group=GP3, inline='mom')
+i_mom_smooth        = input.int(2, '', group=GP3, inline='mom')
+i_emoji = '⚡'
+
+
+HR = i_source_type == option_source1 ? f_HR(hopen, hclose) : f_HR(high, low)
+
+data_len            = i_len //input.int(150, 'Data lookback', group='Data')
+
+////////////////////
+// DYNAMIC PERIOD //
+//pvtLength           = input.int(16, 'Pivot length', group='Data')
+//pvtHigh             = ta.pivothigh(int(pvtLength*1.7), pvtLength)
+//pvtLow              = ta.pivotlow (int(pvtLength*1.7), pvtLength)
+//var x1 = 0
+//var x2 = 0
+//
+//if not na(pvtHigh)
+//    x1 := bar_index
+//
+//if not na(pvtLow)
+//    x2 := bar_index
+//
+//dPeriod = math.max(1, math.abs(x2 - x1))
+//
+//plot(ma.calc('KAMA', ta.sma(ohlc4, dPeriod), 3), linewidth=2, display=display.none)
+
+
+//////////
+// DATA //
+
+all_data = f_get_data(HR, data_len)
+all_stdev = array.stdev(all_data)
+a_data = array.new<float>()
+
+for i = 0 to array.size(all_data) - 1
+    my_value = array.get(all_data, i)
+    if my_value < all_stdev * 5
+        array.push(a_data, my_value)
+
+f_id (_v, _arr) => array.indexof(_arr, array.min(_arr)) < _v
+
+plotshape(i_spot_minid ? f_id(1, a_data) : na, style=shape.labeldown, text="Min. ID", location=location.abovebar, size=size.tiny, textcolor=color.white, offset=-1)
+
+v_std = array.stdev(a_data)
+v_avg = array.avg(a_data)
+
+f_le (_v, _std, _malt) => _v <= _std * _malt
+f_ge (_v, _std, _malt) => _v >= _std * _malt
+
+is_le030 = f_le(HR, v_std, 0.5)
+is_le005 = f_le(HR, v_std, 0.08)
+is_ge500 = f_ge(HR, v_std, 5.00)
+
+//plotshape(is_le030, style=shape.circle, color=color.purple, location=location.bottom, size=size.tiny, textcolor=color.white)
+plotshape(i_spot_smnr ? is_le005 : na, "Sm. NR", style=shape.labelup, text="Sm. NR", color=color.purple, location=location.belowbar, size=size.tiny, textcolor=color.white)
+plotshape(i_spot_lrwr ? is_ge500 : na, "Lr. WR", style=shape.labeldown, text="Lr. WR", color=color.aqua, location=location.abovebar, size=size.tiny, textcolor=color.white)
+
+
+//////////
+// CALC //
+in_barb             = barb_func(HR, i_len, i_sensitivity)
+in_barb_by_roc      = f_barb_roc(hoc2(), i_len)
+in_barb_by_roc2     = f_barb_roc2(16)
+in_barb_by_stoch    = f_barb_stoch(HR, i_stoch_len, 20)
+
+f_barb_type (_type) =>
+    switch _type
+        'rank'              => in_barb
+        'stdev'             => is_le030
+        'roc'               => in_barb_by_roc2
+        'stochastic'        => in_barb_by_stoch
+        => false
+
+//////////////
+// MOMENTUM //
+v_rci = rci_func.calc(i_source, i_rci_length)
+v_rci_smoothed = ma.calc(i_rci_matype, v_rci, i_rci_smooth)
+v_move = ma.calc(i_mom_matype, ta.mom(v_rci, i_mom_length), i_mom_smooth)
+
+var count = 0
+
+if v_rci_smoothed <= 0
+    count := count+1
+else if v_rci_smoothed > 0
+    count := 0
+
+///////////////////
+// Conditions
+///////////////////
+is_mom = ta.crossover(v_move, 0) and v_rci_smoothed <= 0 and count >= 7
+
+plotshape(i_spot_mom ? is_mom : na, "Mom", text=i_emoji, color=color.from_gradient(40, 0, 100, color.yellow, color.orange), style=shape.labeldown, size=size.tiny, location=location.abovebar)
+
+////////////////
+// CONDITIONS //
+
+is_barb = f_barb_type(str.lower(i_barb_type))
+
+
+if i_filter_roc
+    is_barb := is_barb and in_barb_by_roc
+
+barb_start  = is_barb and (not is_barb[1])
+barb_end    = (not is_barb) and is_barb[1]
+
+///////////
+// ALERT //
+
+alertcondition(barb_start, "Barb wire start", "Barb wire start")
+alertcondition(barb_end, "Barb wire end", "Barb wire end")
+
+///////////////
+// RENDERING //
+
+if barstate.isconfirmed
+    f_renderBox(true, barb_start, is_barb, barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor)
+
+
+//////////////
+// ANALYSIS //
+
+i_analysis_show = input.bool(false, 'Analysis', group='ANALYSIS')
+i_analysis_asc  = input.bool(false, 'Order ascending', group='ANALYSIS')
+
+verticalAdj     = 0.6
+lookbackLength  = input.int(200, 'Length', group='ANALYSIS')
+priceHighest    = ta.highest(high, lookbackLength)
+priceLowest     = ta.lowest (low , lookbackLength)
+priceChangeRate = (priceHighest - priceLowest) / priceHighest
+oscTop          = priceLowest  * (1 - priceChangeRate * 0.2)
+oscBottom       = priceLowest  * (1 - priceChangeRate * verticalAdj)
+priceHighest   := priceHighest * (1 + priceChangeRate * verticalAdj)
+barIndex        = 0
+
+oscHeight        = oscTop - oscBottom
+oscHighest      = array.max(a_data)
+
+analysis_data_  = f_get_data(HR, lookbackLength)
+analysis_data   = array.new<float>()
+analysis_stdev  = array.stdev(analysis_data_)
+
+for i = 0 to array.size(analysis_data_) - 1
+    my_value = array.get(analysis_data_, i)
+
+    if my_value < analysis_stdev * 5
+        array.push(analysis_data, my_value)
+
+var a_line = array.new<line>()
+var a_boxes = array.new<box>()
+
+if barstate.islast and i_analysis_show
+
+    if (array.size(a_line) > 0)
+        for i = 0 to array.size(a_line) - 1
+            line.delete(array.shift(a_line))
+
+    if (array.size(a_boxes) > 0)
+        for i = 0 to array.size(a_boxes) - 1
+            box.delete(array.shift(a_boxes))
+
+    hightAdj = oscHeight / oscHighest
+
+    stdev = array.stdev(analysis_data)
+    rank  = array.percentile_nearest_rank(analysis_data, i_sensitivity)
+
+    // _y1 = oscBottom * (1 / oscHighest * hightAdj)
+    // _y2 = oscBottom * (1 / oscHighest * hightAdj)
+    
+    if i_analysis_asc
+        array.sort(analysis_data, order.ascending)
+
+    array.push(a_line, line.new(bar_index, oscTop,  bar_index - lookbackLength, oscTop,  width=1, color=color.new(color.blue, 75)))
+    array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
+    array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
+    array.push(a_line, line.new(bar_index, oscBottom + (rank  * hightAdj),     bar_index - lookbackLength, oscBottom + (rank  * hightAdj),     style=line.style_dotted, width=1, color=color.new(color.orange, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev * hightAdj),     bar_index - lookbackLength, oscBottom + (stdev * hightAdj),     style=line.style_dotted, width=1, color=color.new(color.yellow, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev * 5 * hightAdj), bar_index - lookbackLength, oscBottom + (stdev * 5 * hightAdj), style=line.style_dotted, width=1))
+    xc = int(math.avg(bar_index, bar_index - lookbackLength))
+    array.push(a_line, line.new(xc, oscBottom, xc, oscBottom + oscHighest, style=line.style_dotted))
+
+    for i = 0 to array.size(analysis_data) - 1
+        y2 = array.get(analysis_data, i)
+        color_bar = y2 < (rank) ? color.orange : y2 < (stdev) ? color.yellow : color.blue
+
+        array.push(a_boxes, box.new(bar_index - i, oscBottom, bar_index - i, oscBottom + (y2 * hightAdj), color.new(color_bar, 40), 2, bgcolor=color.new(color_bar, 50)) )
+
+
+
