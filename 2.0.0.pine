@@ -14,8 +14,10 @@ import boitoki/RCI/4 as rci_func
 // DEFINE //
 
 GP3                 = 'MOMENTUM'
-option_source1      = 'Open-Close'
+option_source1      = 'Open-Close Heikin-Ashi'
+option_source4      = 'Open-Close'
 option_source2      = 'High-Low'
+option_source3      = 'Hybrid'
 
 //////////////
 // FUNCTION //
@@ -27,7 +29,7 @@ oc2 (_open, _close) => math.avg(math.max(_open, _close), math.min(_open, _close)
 hoc2 () => math.avg(math.max(hopen, hclose), math.min(hopen, hclose))
 
 //
-f_HR (_open, _close) =>  math.max(_open, _close) - math.min(_open, _close)
+f_HR (_open, _close) =>  math.abs(_open - _close)
 
 //
 f_get_data (_source, _len) =>
@@ -38,61 +40,72 @@ f_get_data (_source, _len) =>
     
     data
 
-//
-f_renderBox (_show, _start, _processing, _end, _min, _border_width, _border_color, _bgcolor) =>
-    var box barb_box = na
-    var label txt = na
-    var line top = na
-    var line bot = na
-    var float y1 = na
-    var float y2 = na
-    var int x1 = na
-    line_style = line.style_dotted
+f_remove_boxes (_arr, _max) =>
+    if array.size(_arr) > _max
+        for i = _max to array.size(_arr)
+            box.delete(array.shift(_arr))
 
-    if _start
-        x1 := bar_index
-        y1 := high
-        y2 := low
-        barb_box := box.new(x1, y1, x1, y2, _border_color, _border_width, line.style_solid, bgcolor=_bgcolor)
-        txt := label.new(x1, y1, '•', color=_border_color, textcolor=ac.panda('lightergray'), size=size.tiny)
+//
+f_renderBox (_start, _processing, _end, _min, _border_width, _border_color, _bgcolor, _drawing_max, _show) =>
+    if _show
+        var box barb_box    = na
+        var label txt       = na
+        var line top        = na
+        var line bot        = na
+        var float y1        = na
+        var float y2        = na
+        var int x1          = na
+        line_style = line.style_dotted
+        var boxes = array.new<box>()
     
-    if _processing
-        y1 := math.max(y1, high)
-        y2 := math.min(y2, low)
-        box.set_top(barb_box, y1)
-        box.set_bottom(barb_box, y2)
-        box.set_right(barb_box, bar_index)
-        label.set_y(txt, y1)
-        label.set_text(txt, '•••')
+        if _start
+            x1 := bar_index
+            y1 := high
+            y2 := low
+            barb_box := box.new(x1, y1, x1, y2, _border_color, _border_width, line.style_solid, bgcolor=_bgcolor)
+            txt := label.new(x1, y1, '•', color=color.new(_border_color, 5), textcolor=ac.panda('verydarkgray'), size=size.tiny)
     
-    if _end
-        box.set_right(barb_box, bar_index)
-        label.delete(txt)
+        if _processing
+            y1 := math.max(y1, high)
+            y2 := math.min(y2, low)
+            box.set_top(barb_box, y1)
+            box.set_bottom(barb_box, y2)
+            box.set_right(barb_box, bar_index)
+            label.set_y(txt, y1)
+            label.set_text(txt, '•••')
         
-        width = math.abs(box.get_right(barb_box) - box.get_left(barb_box))
-
-        if width < _min
-            box.delete(barb_box)
-
-        y1 := na, y2 := na
+        if _end
+            box.set_right(barb_box, bar_index-1)
+            label.delete(txt)
+    
+            width = math.abs(box.get_right(barb_box) - box.get_left(barb_box))
+    
+            if width < _min
+                box.delete(barb_box)
+            else
+                array.push(boxes, barb_box)
+                
+                f_remove_boxes(boxes, _drawing_max)
+    
+            y1 := na, y2 := na
 
 //
 //
-f_barb_roc (_src, _len) =>
-    roc_arr = array.new<float>(_len)
-    roc = ta.roc(_src, 2)
-    roc_moved = math.abs(roc - roc[3])
+f_dir_by_roc (_src, _len) =>
+    roc_arr     = array.new<float>(_len)
+    roc         = ta.roc(_src, 2)
+    roc_moved   = math.abs(roc - roc[3])
     
     for i = 1 to _len
         array.push(roc_arr, roc_moved[i])
 
-    min_roc_value = array.min(roc_arr)
-    min_roc_value := array.median(roc_arr)
+    min_roc_value   = array.min(roc_arr)
+    min_roc_value  := array.stdev(roc_arr) * 3.0
     
     roc_moved <= min_roc_value
 
 // 
-f_barb_roc2 (_len) =>
+f_barb_roc (_len) =>
     height = math.max(hopen, hclose) - math.min(hopen, hclose)
     roc = ta.roc(height, _len)
     
@@ -104,7 +117,7 @@ f_barb_stoch (_source, _len, _lv) =>
     v <= _lv
 
 //
-barb_func (_source, _len, _sens) =>
+f_barb_rank (_source, _len, _sens) =>
     arr = array.new<float>(_len)
     new_arr = array.new<float>()
 
@@ -119,128 +132,101 @@ barb_func (_source, _len, _sens) =>
 
     in_barb
 
+f_le (_v, _std, _malt) => _v <= _std * _malt
+f_ge (_v, _std, _malt) => _v >= _std * _malt
+f_id (_v, _arr) => array.indexof(_arr, array.min(_arr)) < _v
+
 ////////////
 // INPUTS //
 
-i_source_type       = input.string(option_source1, 'Source', options=[option_source1, option_source2])
+i_source_type       = input.string(option_source1, 'Source', options=[option_source1, option_source2, option_source3, option_source4])
 i_len               = input.int(50, 'Length')
 i_min               = input.int(3, 'Num. of minimum bars', minval=0)
 
 // LOGIC
-i_barb_type         = input.string('Stdev', 'Calculated by', options=['Rank', 'Stdev', 'ROC', 'Stochastic'])
-i_sensitivity       = input.int(10, '• Nearest rank %', minval=1, maxval=100)
+i_barb_type         = input.string('Rank', 'Calculated by', options=['Rank', 'Stochastic', 'Stdev', 'ROC'])
+i_sensitivity       = input.int(20, '• Nearest rank %', minval=1, maxval=100)
 i_stoch_len         = input.int(14, '• Stochastic length', minval=1, maxval=100)
 i_filter_roc        = input.bool(false, "Directional Exclusion by ROC", group='Filter')
+i_filter_stdev5     = true // input.bool(true, 'Filtered ">5STDEV"', group='Filter')
+
+// STYLE
+i_show_barbwire     = input.bool(true, 'Show Barbwire', group='style')
+i_border_width      = input.int(2, '', minval=0, group='style', inline='style', tooltip='Border width / color / bgcolor')
+i_boxcolor          = input.color(color.new(#E6DB74, 20), '', group='style', inline='style')
+i_bgcolor           = input.color(color.new(#E6DB74, 80), '', group='style', inline='style')
 
 i_spot_minid        = input.bool(false, 'Min. ID', group='SPOT FLAGS')
 i_spot_smnr         = input.bool(false, 'Sm. NR', group='SPOT FLAGS')
 i_spot_lrwr         = input.bool(false, 'Lr. WR', group='SPOT FLAGS')
-i_spot_mom          = input.bool(false, 'Mom.', group='SPOT FLAGS')
+//i_spot_div          = input.bool(false, 'Divergence', group='SPOT FLAGS')
 
-// STYLE
-i_border_width      = input.int(0, '', minval=0, group='style', inline='style', tooltip='Border width / color / bgcolor')
-i_boxcolor          = input.color(color.new(#E6DB74, 20), '', group='style', inline='style')
-i_bgcolor           = input.color(color.new(#E6DB74, 30), '', group='style', inline='style')
-
-i_rci_length        = input.int(14, 'RCI', minval=1, group=GP3, inline='rci', tooltip="Length / Ma type / Smoothing")
-i_rci_matype        = input.string('EMA', '', options=['ALMA', 'AMA', 'DEMA', 'EMA', 'HMA', 'KAMA', 'LSMA', 'MAV', 'RMA', 'SMA', 'SWMA', 'TEMA', 'TMA', 'VWMA', 'WMA', 'ZLEMA'], group=GP3, inline='rci')
-i_rci_smooth        = input.int(3, '', group=GP3, minval=1, inline='rci')
-i_source            = math.max(hopen, hclose) - math.min(hopen, hclose)
-
-i_mom_length        = input.int(3, 'MOM', minval=1, group=GP3, inline='mom', tooltip='Length / Ma type / Smoothing')
-i_mom_matype        = input.string('MAV', '', options=['ALMA', 'AMA', 'DEMA', 'EMA', 'HMA', 'KAMA', 'LSMA', 'MAV', 'RMA', 'SMA', 'SWMA', 'TEMA', 'TMA', 'VWMA', 'WMA', 'ZLEMA'], group=GP3, inline='mom')
-i_mom_smooth        = input.int(2, '', group=GP3, inline='mom')
-i_emoji = '⚡'
+i_barcolor          = input.bool(true, "Bar colors", group='OPTIONS')
+i_memory_cleaning   = input.bool(false, 'Memory cleaning', group='OPTIONS')
+i_drawing_max       = i_memory_cleaning ? 5 : 200
 
 
-HR = i_source_type == option_source1 ? f_HR(hopen, hclose) : f_HR(high, low)
+emoji_light         = '⚡'
+emoji_danger        = '⚠️'
 
-data_len            = i_len //input.int(150, 'Data lookback', group='Data')
-
-////////////////////
-// DYNAMIC PERIOD //
-//pvtLength           = input.int(16, 'Pivot length', group='Data')
-//pvtHigh             = ta.pivothigh(int(pvtLength*1.7), pvtLength)
-//pvtLow              = ta.pivotlow (int(pvtLength*1.7), pvtLength)
-//var x1 = 0
-//var x2 = 0
-//
-//if not na(pvtHigh)
-//    x1 := bar_index
-//
-//if not na(pvtLow)
-//    x2 := bar_index
-//
-//dPeriod = math.max(1, math.abs(x2 - x1))
-//
-//plot(ma.calc('KAMA', ta.sma(ohlc4, dPeriod), 3), linewidth=2, display=display.none)
-
+HR                  = switch i_source_type
+    option_source1  => f_HR(hopen, hclose)
+    option_source2  => f_HR(high, low)
+    option_source3  => math.avg(f_HR(hopen, hclose) * 0.5, f_HR(open, close) * 0.3, f_HR(high, low) * 0.2)
+    option_source4  => f_HR(open, close)
+    => f_HR(high, low)
 
 //////////
 // DATA //
+data_len        = i_len //input.int(150, 'Data lookback', group='Data')
 
-all_data = f_get_data(HR, data_len)
-all_stdev = array.stdev(all_data)
-a_data = array.new<float>()
+all_data        = f_get_data(HR, data_len)
+all_stdev       = array.stdev(all_data)
+a_data          = array.new<float>()
 
-for i = 0 to array.size(all_data) - 1
-    my_value = array.get(all_data, i)
-    if my_value < all_stdev * 5
-        array.push(a_data, my_value)
+if i_filter_stdev5 and array.size(all_data) > 0
+    for i = 0 to array.size(all_data) - 1
+        my_value = array.get(all_data, i)
+        if my_value < all_stdev * 5
+            array.push(a_data, my_value)
+else
+    a_data     := array.copy(all_data)
 
-f_id (_v, _arr) => array.indexof(_arr, array.min(_arr)) < _v
+v_std           = array.stdev(a_data)
+v_avg           = array.avg(a_data)
 
-plotshape(i_spot_minid ? f_id(1, a_data) : na, style=shape.labeldown, text="Min. ID", location=location.abovebar, size=size.tiny, textcolor=color.white, offset=-1)
+i_stdev_xs      = 0.10
+i_stdev_s       = 0.50
+i_stdev_l       = 4.00
+i_stdev_xl      = 5.00
 
-v_std = array.stdev(a_data)
-v_avg = array.avg(a_data)
-
-f_le (_v, _std, _malt) => _v <= _std * _malt
-f_ge (_v, _std, _malt) => _v >= _std * _malt
-
-is_le030 = f_le(HR, v_std, 0.5)
-is_le005 = f_le(HR, v_std, 0.08)
-is_ge500 = f_ge(HR, v_std, 5.00)
-
-//plotshape(is_le030, style=shape.circle, color=color.purple, location=location.bottom, size=size.tiny, textcolor=color.white)
-plotshape(i_spot_smnr ? is_le005 : na, "Sm. NR", style=shape.labelup, text="Sm. NR", color=color.purple, location=location.belowbar, size=size.tiny, textcolor=color.white)
-plotshape(i_spot_lrwr ? is_ge500 : na, "Lr. WR", style=shape.labeldown, text="Lr. WR", color=color.aqua, location=location.abovebar, size=size.tiny, textcolor=color.white)
+is_le030        = f_le(HR, v_std, i_stdev_s)
+is_le005        = f_le(HR, v_std, i_stdev_xs)
+is_geL          = f_ge(HR, v_std, i_stdev_l)
+is_geXL         = f_ge(HR, v_std, i_stdev_xl)
 
 
 //////////
 // CALC //
-in_barb             = barb_func(HR, i_len, i_sensitivity)
-in_barb_by_roc      = f_barb_roc(hoc2(), i_len)
-in_barb_by_roc2     = f_barb_roc2(16)
+in_barb             = f_barb_rank(HR, i_len, i_sensitivity)
+in_barb_by_roc      = f_barb_roc(16)
 in_barb_by_stoch    = f_barb_stoch(HR, i_stoch_len, 20)
+is_dir_by_roc       = f_dir_by_roc(hoc2(), i_len)
 
 f_barb_type (_type) =>
     switch _type
         'rank'              => in_barb
         'stdev'             => is_le030
-        'roc'               => in_barb_by_roc2
+        'roc'               => in_barb_by_roc
         'stochastic'        => in_barb_by_stoch
         => false
 
-//////////////
-// MOMENTUM //
-v_rci = rci_func.calc(i_source, i_rci_length)
-v_rci_smoothed = ma.calc(i_rci_matype, v_rci, i_rci_smooth)
-v_move = ma.calc(i_mom_matype, ta.mom(v_rci, i_mom_length), i_mom_smooth)
-
-var count = 0
-
-if v_rci_smoothed <= 0
-    count := count+1
-else if v_rci_smoothed > 0
-    count := 0
 
 ///////////////////
 // Conditions
 ///////////////////
-is_mom = ta.crossover(v_move, 0) and v_rci_smoothed <= 0 and count >= 7
 
-plotshape(i_spot_mom ? is_mom : na, "Mom", text=i_emoji, color=color.from_gradient(40, 0, 100, color.yellow, color.orange), style=shape.labeldown, size=size.tiny, location=location.abovebar)
+
 
 ////////////////
 // CONDITIONS //
@@ -249,10 +235,15 @@ is_barb = f_barb_type(str.lower(i_barb_type))
 
 
 if i_filter_roc
-    is_barb := is_barb and in_barb_by_roc
+    is_barb := is_barb and is_dir_by_roc
 
 barb_start  = is_barb and (not is_barb[1])
 barb_end    = (not is_barb) and is_barb[1]
+
+bar_type    = close  > open  ? 1 : -1
+hbar_type   = hclose > hopen ? 1 : -1
+
+is_flip     = bar_type != hbar_type and hbar_type != hbar_type[1]
 
 ///////////
 // ALERT //
@@ -263,8 +254,82 @@ alertcondition(barb_end, "Barb wire end", "Barb wire end")
 ///////////////
 // RENDERING //
 
-if barstate.isconfirmed
-    f_renderBox(true, barb_start, is_barb, barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor)
+//if barstate.isconfirmed
+f_renderBox(barb_start, is_barb, barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor, i_drawing_max, i_show_barbwire)
+
+//////////////
+// PLOTTING //
+
+color bar_color = na
+
+top = math.max(open, close)
+bot = math.min(open, close)
+
+od = high > high[1] and low < low[1]
+up = top  > top[1]  and bot > low[1]
+dn = top  < high[1] and bot < bot[1]
+
+//if i_spot_lrwr
+//    if is_geXL
+//        bar_color := color.from_gradient(30, 0, 100, color.red, color.orange)
+//    else if is_geL
+//        bar_color := color.from_gradient(70, 0, 100, color.red, color.orange)
+//
+//
+
+// color.rgb(8, 16, 48, 0)
+// color.rgb(0, 32, 96, 0)
+// color.rgb(0, 52, 146, 0)
+// color.rgb(0, 90, 148, 0)
+// color.rgb(0, 117, 146, 0)
+// color.rgb(26, 140, 147, 0)
+// color.rgb(103, 162, 155, 0)
+// color.rgb(155, 183, 172, 0)
+// color.rgb(182, 182, 182, 0) ---
+// color.rgb(175, 174, 152, 0)
+// color.rgb(167, 147, 107, 0)
+// color.rgb(163, 116, 67, 0)
+// color.rgb(159, 81, 44, 0)
+// color.rgb(142, 47, 57, 0)
+// color.rgb(111, 24, 64, 0)
+// color.rgb(48, 8, 24, 0)
+
+if i_barcolor
+    if      HR <= v_std * 0.05
+        bar_color := color.rgb(195, 63, 63, 0)
+    else if HR < v_std * 0.08
+        bar_color := color.rgb(227, 73, 19, 0)
+    
+    else if HR >= v_std * 5.00
+        bar_color := color.rgb(0, 45, 253, 0)
+    else if HR >= v_std * 4.00
+        bar_color := color.rgb(164, 171, 255, 0)
+    else 
+        bar_color := color.rgb(182, 182, 182, 70)
+
+    if is_flip
+        bar_color := color.yellow
+
+barcolor(i_barcolor ? bar_color : na)
+
+color_1 = color.from_gradient(80, 0, 100, color.white, color.yellow)
+color_2 = color.from_gradient(80, 0, 100, color.yellow, color.red)
+
+plotshape(i_spot_smnr ? is_le005 ? hl2 : na : na, "Sm. NR", style=shape.circle, text="Sm. NR", color=color.new(color_1, 70), location=location.absolute, size=size.normal, textcolor=color.new(color.white, 100))
+plotshape(i_spot_minid ? f_id(1, a_data) ? hl2[1] : na : na, 'Min. ID', style=shape.circle, text="Min. ID", color=color.new(color_2, 10)   , location=location.absolute, size=size.small , textcolor=color.new(color.white, 100), offset=-1)
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 //////////////
@@ -274,7 +339,7 @@ i_analysis_show = input.bool(false, 'Analysis', group='ANALYSIS')
 i_analysis_asc  = input.bool(false, 'Order ascending', group='ANALYSIS')
 
 verticalAdj     = 0.6
-lookbackLength  = input.int(200, 'Length', group='ANALYSIS')
+lookbackLength  = i_len//input.int(200, 'Length', group='ANALYSIS')
 priceHighest    = ta.highest(high, lookbackLength)
 priceLowest     = ta.lowest (low , lookbackLength)
 priceChangeRate = (priceHighest - priceLowest) / priceHighest
@@ -290,16 +355,20 @@ analysis_data_  = f_get_data(HR, lookbackLength)
 analysis_data   = array.new<float>()
 analysis_stdev  = array.stdev(analysis_data_)
 
-for i = 0 to array.size(analysis_data_) - 1
-    my_value = array.get(analysis_data_, i)
-
-    if my_value < analysis_stdev * 5
-        array.push(analysis_data, my_value)
+if i_filter_stdev5 and array.size(analysis_data_) > 0
+    for i = 0 to array.size(analysis_data_) - 1
+        my_value = array.get(analysis_data_, i)
+    
+        if my_value < analysis_stdev * 5
+            array.push(analysis_data, my_value)
+else
+    analysis_data := array.copy(analysis_data_)    
 
 var a_line = array.new<line>()
+var a_labels = array.new<label>()
 var a_boxes = array.new<box>()
 
-if barstate.islast and i_analysis_show
+if barstate.islast and i_analysis_show and array.size(analysis_data) > 0
 
     if (array.size(a_line) > 0)
         for i = 0 to array.size(a_line) - 1
@@ -308,11 +377,19 @@ if barstate.islast and i_analysis_show
     if (array.size(a_boxes) > 0)
         for i = 0 to array.size(a_boxes) - 1
             box.delete(array.shift(a_boxes))
+    
+    if (array.size(a_labels) > 0)
+        for i = 0 to array.size(a_labels) - 1
+            label.delete(array.shift(a_labels))
 
     hightAdj = oscHeight / oscHighest
 
-    stdev = array.stdev(analysis_data)
-    rank  = array.percentile_nearest_rank(analysis_data, i_sensitivity)
+    rank        = array.percentile_nearest_rank(analysis_data, i_sensitivity)
+    stdev       = array.stdev(analysis_data)
+
+    stdev_xs    = stdev * i_stdev_xs
+    stdev_s     = stdev * i_stdev_s
+    stdev_l     = stdev * i_stdev_l
 
     // _y1 = oscBottom * (1 / oscHighest * hightAdj)
     // _y2 = oscBottom * (1 / oscHighest * hightAdj)
@@ -323,17 +400,23 @@ if barstate.islast and i_analysis_show
     array.push(a_line, line.new(bar_index, oscTop,  bar_index - lookbackLength, oscTop,  width=1, color=color.new(color.blue, 75)))
     array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
     array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
-    array.push(a_line, line.new(bar_index, oscBottom + (rank  * hightAdj),     bar_index - lookbackLength, oscBottom + (rank  * hightAdj),     style=line.style_dotted, width=1, color=color.new(color.orange, 30)))
-    array.push(a_line, line.new(bar_index, oscBottom + (stdev * hightAdj),     bar_index - lookbackLength, oscBottom + (stdev * hightAdj),     style=line.style_dotted, width=1, color=color.new(color.yellow, 30)))
-    array.push(a_line, line.new(bar_index, oscBottom + (stdev * 5 * hightAdj), bar_index - lookbackLength, oscBottom + (stdev * 5 * hightAdj), style=line.style_dotted, width=1))
+    array.push(a_line, line.new(bar_index, oscBottom + (rank     * hightAdj), bar_index - lookbackLength, oscBottom + (rank     * hightAdj), style=line.style_dotted, width=1, color=color.new(color.orange, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev_xs * hightAdj), bar_index - lookbackLength, oscBottom + (stdev_xs * hightAdj), style=line.style_dotted, width=1, color=color.new(color.purple, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev_l  * hightAdj), bar_index - lookbackLength, oscBottom + (stdev_l  * hightAdj), style=line.style_dotted, width=1))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (rank     * hightAdj), 'Rank',     color=color.new(color.orange, 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (stdev_xs * hightAdj), 'Stdev XS', color=color.new(color.purple, 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (stdev_l  * hightAdj), 'Stdev L' , color=color.new(color.blue  , 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+
     xc = int(math.avg(bar_index, bar_index - lookbackLength))
-    array.push(a_line, line.new(xc, oscBottom, xc, oscBottom + oscHighest, style=line.style_dotted))
+    array.push(a_line, line.new(xc, oscBottom, xc, oscBottom + oscHeight, style=line.style_dotted))
 
     for i = 0 to array.size(analysis_data) - 1
         y2 = array.get(analysis_data, i)
-        color_bar = y2 < (rank) ? color.orange : y2 < (stdev) ? color.yellow : color.blue
+        color_bar   = y2 < (rank)   ? color.orange : y2 < (stdev) ? color.blue : color.from_gradient(50, 0, 100, color.blue, color.black)
+        color_bar  := y2 < stdev_xs ? color.purple : color_bar
 
-        array.push(a_boxes, box.new(bar_index - i, oscBottom, bar_index - i, oscBottom + (y2 * hightAdj), color.new(color_bar, 40), 2, bgcolor=color.new(color_bar, 50)) )
+        //array.push(a_boxes, box.new(bar_index - i, oscBottom, bar_index - i, oscBottom + (y2 * hightAdj), color.new(color_bar, 40), 2, bgcolor=color.new(color_bar, 50)) )
+        array.push(a_line, line.new(bar_index - i, oscBottom, bar_index - i, oscBottom + (y2 * hightAdj), color=color.new(color_bar, 40), width=2) )
 
 
 
