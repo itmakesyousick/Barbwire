@@ -1,0 +1,424 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © boitoki
+
+//@version=5
+indicator("Barbwire", overlay=true, precision=2, max_boxes_count=300, max_lines_count=500)
+
+import boitoki/AwesomeColor/5 as ac
+import boitoki/ma_function/3 as ma
+import boitoki/RCI/4 as rci_func
+
+[hopen, hclose]         = request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, [open, close])
+hoc2                    = math.avg(math.max(hopen, hclose), math.min(hopen, hclose))
+oc2                     = math.avg(math.max(open, close), math.min(open, close))
+
+////////////
+// DEFINE //
+
+option_source1          = 'Open-Close Heikin-Ashi'
+option_source4          = 'Open-Close'
+option_source2          = 'High-Low'
+option_source3          = 'Hybrid'
+sign                    = 'Display'
+GP1                     = sign
+GP2                     = sign
+GP3                     = sign
+color_red               = #D93611
+color_blue              = #1D5A73
+
+//////////////
+// FUNCTION //
+
+//
+f_HR (_open, _close) =>  math.abs(_open - _close)
+
+// 
+f_source (_type) => 
+    switch _type
+        option_source1      => f_HR(hopen, hlc3)
+        option_source2      => f_HR(high, low)
+        option_source3      => math.avg(f_HR(hopen, hlc3) * 0.6, f_HR(open, close) * 0.3, f_HR(high, low) * 0.1)
+        option_source4      => f_HR(open, close)
+        => f_HR(high, low)
+
+//
+f_get_data (_source, _len) =>
+    data = array.new<float>()
+
+    for i = 1 to _len
+        array.push(data, _source[i])
+    
+    data
+
+f_remove_boxes (_arr, _max) =>
+    if array.size(_arr) > _max
+        for i = _max to array.size(_arr)
+            box.delete(array.shift(_arr))
+
+f_get_width_by_box (_id) => math.abs(box.get_right(_id) - box.get_left(_id))
+
+//
+f_renderBox (_start, _processing, _end, _min, _border_width, _border_color, _bgcolor, _drawing_max, _show) =>
+    start_notif     = false
+    end_notif       = false
+    count           = 0
+
+    if _show
+        var box barb_box    = na
+        var label txt       = na
+        var line top        = na
+        var line bot        = na
+        var float y1        = na
+        var float y2        = na
+        var int x1          = na
+        line_style          = line.style_dotted
+        var boxes           = array.new<box>()
+        
+        count              := f_get_width_by_box(barb_box)
+    
+        if _start
+            x1 := bar_index
+            y1 := high
+            y2 := low
+            barb_box := box.new(x1, y1, x1, y2, _border_color, _border_width, line.style_solid, bgcolor=_bgcolor)
+            txt := label.new(x1, y1, '•', color=color.new(_border_color, 5), textcolor=ac.panda('verydarkgray'), size=size.tiny)
+    
+        if _processing
+            y1 := math.max(y1, high)
+            y2 := math.min(y2, low)
+            box.set_top(barb_box, y1)
+            box.set_bottom(barb_box, y2)
+            box.set_right(barb_box, bar_index)
+            label.set_y(txt, y1)
+            label.set_text(txt, '•••')
+            
+            if count == _min
+                start_notif := true
+        
+        if _end
+            box.set_right(barb_box, bar_index)
+
+            label.delete(txt)
+    
+            if count < _min
+                box.delete(barb_box)
+            else
+                array.push(boxes, barb_box)
+                
+                f_remove_boxes(boxes, _drawing_max)
+                end_notif := true
+    
+            y1 := na, y2 := na
+
+    [start_notif, end_notif, count]
+
+//
+//
+f_barb_start (in_barb)  => in_barb and (not in_barb[1])
+
+f_barb_end (in_barb)    => (not in_barb) and in_barb[1]
+
+//
+//
+f_dir_by_roc (_src, _len, _scale=2.0) =>
+    roc_arr     = array.new<float>(_len)
+    roc         = ta.roc(_src, 2)
+    roc_moved   = math.abs(roc - roc[3])
+    
+    for i = 1 to _len
+        array.push(roc_arr, roc_moved[i])
+
+    min_roc_value   = array.min(roc_arr)
+    min_roc_value  := array.stdev(roc_arr) * _scale
+    
+    roc_moved <= min_roc_value
+
+// 
+f_barb_roc (_len) =>
+    height = math.max(hopen, hclose) - math.min(hopen, hclose)
+    roc = ta.roc(height, _len)
+    
+    roc <= 0
+
+//
+f_barb_stoch (_source1, _source2, _len, _lv) =>
+    v1 = ta.stoch(_source1, _source1, _source1, _len)
+    v2 = ta.stoch(_source2, _source2, _source2, math.round(_len * 0.5))
+    (v1 <= _lv) and (v2 <= _lv)
+
+//
+f_barb_rank (_source, _len, _sens) =>
+    arr = array.new<float>(_len)
+    new_arr = array.new<float>()
+
+    for i = 1 to _len
+        array.push(arr, _source[i])
+
+    min_value = array.min(arr)
+    min_value := array.percentile_nearest_rank(arr, _sens)
+    min_value := math.max(min_value, syminfo.mintick * 2)
+
+    in_barb = _source <= (min_value)
+
+    in_barb
+
+f_le (_v, _std, _malt) => _v <= _std * _malt
+f_ge (_v, _std, _malt) => _v >= _std * _malt
+f_id (_v, _arr) => array.indexof(_arr, array.min(_arr)) < _v
+
+////////////
+// INPUTS //
+
+i_source_type           = input.string(option_source3, 'Source', options=[option_source1, option_source4, option_source2, option_source3])
+i_min                   = input.int(4, 'Num. of minimum bars', minval=0)
+
+i_show_barb             = input.bool(true, 'Mixed', group=GP1)
+
+i_show_barb_stoch       = input.bool(false, 'Stochastic', group=GP1, tooltip='Length • Level %')
+i_stoch_length          = input.int(50, '↔', inline='stoch_param', group=GP1)
+i_stoch_level           = input.int(18, '/ ≤', inline='stoch_param', group=GP1)
+
+i_show_barb_rank        = input.bool(false, 'Rank %', group=GP2, tooltip='Length • Level %')
+i_len                   = input.int(100, '↔', inline='rank_param', group=GP2)
+i_rank_level            = input.int(5, '/ ≤', minval=0, inline='rank_param', group=GP2)
+
+i_show_barb_stdev       = false     //input.bool(false, '• Stdev', inline='stdev', group=GP3, tooltip='Level')
+i_stdev_mult            = 0.20      //input.float(0.20, '', minval=0.0, step=0.01, inline='stdev', group=GP3)
+
+
+// FILTER
+i_dir_roc_sens          = 2.0       // input.float(2.0, '', minval=0, step=0.1, group='FILTER')
+i_filter_stdev5         = true      // input.bool(true, 'Filtered ">5STDEV"', group='Filter')
+
+
+// STYLE
+i_border_width          = input.int(2, '', minval=0, group='style', inline='style', tooltip='Border width / color / bgcolor')
+i_boxcolor              = input.color(color.new(#F2A341, 20), '', group='style', inline='style')
+i_bgcolor               = input.color(color.new(#F4C58B, 84), '', group='style', inline='style')
+
+i_barcolor              = input.bool(false, "Bar colors", group='OPTIONS')
+i_spot_smallest         = input.bool(false, 'Smallest bar', inline='smallest_bar', group='OPTIONS')
+i_smallest_color        = input.color(#F2A341, '', inline='smallest_bar', group='OPTIONS')
+i_spot_largest          = input.bool(false, 'Largest bar', inline='largest_bar', group='OPTIONS')
+i_largest_color         = input.color(#0C74A6, '', inline='largest_bar', group='OPTIONS')
+
+i_spot_priceflip        = false     //input.bool(false, 'Price flip', group='OPTIONS')
+
+i_memory_cleaning       = false     //input.bool(false, 'Memory cleaning', group='OPTIONS')
+i_drawing_max           = i_memory_cleaning ? 5 : 200
+
+//////////
+// DATA //
+HR                      = f_source(i_source_type)
+
+data_len                = i_len
+
+all_data                = f_get_data(HR, data_len)
+all_stdev               = array.stdev(all_data)
+a_data                  = array.new<float>()
+
+if i_filter_stdev5 and array.size(all_data) > 0
+    for i = 0 to array.size(all_data) - 1
+        my_value = array.get(all_data, i)
+        if my_value < all_stdev * 5
+            array.push(a_data, my_value)
+else
+    a_data     := array.copy(all_data)
+
+v_std                   = array.stdev(a_data)
+v_avg                   = array.avg(a_data)
+
+i_stdev_xs              = 0.18
+i_stdev_s               = 0.50
+i_stdev_l               = 4.00
+i_stdev_xl              = 5.00
+
+is_le030                = f_le(HR, v_std, i_stdev_s)
+is_le005                = f_le(HR, v_std, i_stdev_xs)
+is_small                = f_le(HR, v_std, i_stdev_xs)
+is_geL                  = f_ge(HR, v_std, i_stdev_l)
+is_geXL                 = f_ge(HR, v_std, i_stdev_xl)
+is_largest              = is_geXL
+is_smallest             = (f_id(1, a_data) or f_le(HR, v_std, i_stdev_xs))
+
+if is_smallest[1]
+    is_smallest        := false
+
+
+//////////
+// CALC //
+
+// FILTER //
+is_dir_by_roc           = f_dir_by_roc(hoc2, i_len, i_dir_roc_sens)
+
+in_barb_by_stoch        = f_barb_stoch(f_HR(hopen, ohlc4), f_HR(high, low), i_stoch_length, i_stoch_level)
+in_barb_by_rank         = f_barb_rank(HR, i_len, i_rank_level)  and is_dir_by_roc
+in_barb_by_stdev        = f_le(HR, v_std, i_stdev_mult)         and is_dir_by_roc
+in_barb_by_roc          = f_barb_roc(16)
+
+in_barb                 = in_barb_by_stoch or in_barb_by_rank or in_barb_by_stdev
+
+
+///////////////////
+// Conditions
+///////////////////
+
+
+//////////////
+// BARBWIRE //
+
+//if i_filter_roc
+//    is_barb := is_barb and is_dir_by_roc
+
+
+stoch_barb_start        = f_barb_start(in_barb_by_stoch)
+stoch_barb_end          = f_barb_end(in_barb_by_stoch)
+
+rank_barb_start         = f_barb_start(in_barb_by_rank)
+rank_barb_end           = f_barb_end(in_barb_by_rank)
+
+stdev_barb_start        = f_barb_start(in_barb_by_stdev)
+stdev_barb_end          = f_barb_end(in_barb_by_stdev)
+
+barb_start              = f_barb_start(in_barb)
+barb_end                = f_barb_end(in_barb)
+
+// RENDERING //
+f_renderBox(stoch_barb_start, in_barb_by_stoch, stoch_barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor, i_drawing_max, i_show_barb_stoch and barstate.isconfirmed)
+    
+f_renderBox(rank_barb_start, in_barb_by_rank, rank_barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor, i_drawing_max, i_show_barb_rank and barstate.isconfirmed)
+    
+f_renderBox(stdev_barb_start, in_barb_by_stdev, stdev_barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor, i_drawing_max, i_show_barb_stdev and barstate.isconfirmed)
+    
+[start_notif, end_notif, barb_count] = f_renderBox(barb_start, in_barb, barb_end, i_min, i_border_width, i_boxcolor, i_bgcolor, i_drawing_max, i_show_barb and barstate.isconfirmed)
+
+if in_barb and barb_count >= i_min
+    is_smallest        := false
+
+////////////////
+// CONDITIONS //
+bar_type                = close > open  ? 1 : -1
+hbar_type               = ohlc4 > hopen ? 1 : -1
+
+// TD Sequence
+var TD                  = 0
+var TS                  = 0
+TD                     := ohlc4 > ohlc4[4] ? nz(TD[1])+1 : 0
+TS                     := ohlc4 < ohlc4[4] ? nz(TS[1])+1 : 0
+TDUp                    = TD - ta.valuewhen(TD < TD[1], TD , 1)
+TDDn                    = TS - ta.valuewhen(TS < TS[1], TS , 1)
+
+is_priceflip            = hbar_type != hbar_type[1]
+
+///////////////
+// RENDERING //
+
+
+
+//////////////
+// PLOTTING //
+color bar_color = na
+
+if i_barcolor
+    if is_largest
+        bar_color := i_largest_color
+    else if is_smallest
+        bar_color := i_smallest_color
+    else 
+        bar_color := na
+
+barcolor(i_barcolor ? bar_color : na)
+plotshape(i_spot_smallest and is_smallest ? oc2[1] : na, 'Smallest bar', text="Smallest bar", style=shape.diamond, color=color.new(i_smallest_color, 30), location=location.absolute, size=size.tiny , textcolor=color.new(color.white, 100), offset=-1)
+plotshape(i_spot_largest  and is_largest  ? oc2[0] : na, 'Largest bar' , text="Largest bar" , style=shape.diamond, color=color.new(i_largest_color , 30), location=location.absolute, size=size.tiny , textcolor=color.new(color.white, 100))
+
+plotshape(is_priceflip and hbar_type == -1 and TDUp and TD >= 12, 'Price flip sell', text="⌁", color=color_red , textcolor=color.white, style=shape.labeldown, location=location.abovebar, size=size.tiny, display=display.none)
+plotshape(is_priceflip and hbar_type ==  1 and TDDn and TS >= 12, 'Price flip buy', text="⌁", color=color_blue, textcolor=color.white, style=shape.labelup  , location=location.belowbar, size=size.tiny, display=display.none)
+
+
+///////////
+// ALERT //
+alertcondition(start_notif, "Barbwire start", "Barbwire start")
+alertcondition(end_notif  , "Barbwire end"  , "Barbwire end"  )
+alertcondition(is_smallest, "The smallest bar", "The smallest bar appeared")
+
+
+
+
+
+//////////////
+// ANALYSIS //
+
+i_analysis_show         = false//input.bool(false, 'Analysis', group='ANALYSIS')
+i_analysis_asc          = false//input.bool(false, 'Order ascending', group='ANALYSIS')
+
+verticalAdj             = 0.6
+lookbackLength          = i_len//input.int(200, 'Length', group='ANALYSIS')
+priceHighest            = ta.highest(high, lookbackLength)
+priceLowest             = ta.lowest (low , lookbackLength)
+priceChangeRate         = (priceHighest - priceLowest) / priceHighest
+oscTop                  = priceLowest  * (1 - priceChangeRate * 0.2)
+oscBottom               = priceLowest  * (1 - priceChangeRate * verticalAdj)
+priceHighest           := priceHighest * (1 + priceChangeRate * verticalAdj)
+barIndex                = 0
+
+oscHeight               = oscTop - oscBottom
+oscHighest              = array.max(a_data)
+
+analysis_data_          = f_get_data(HR, lookbackLength)
+analysis_data           = array.new<float>()
+analysis_stdev          = array.stdev(analysis_data_)
+
+if i_filter_stdev5 and array.size(analysis_data_) > 0
+    for i = 0 to array.size(analysis_data_) - 1
+        my_value = array.get(analysis_data_, i)
+    
+        if my_value < analysis_stdev * 5
+            array.push(analysis_data, my_value)
+else
+    analysis_data := array.copy(analysis_data_)    
+
+var a_line = array.new<line>()
+var a_labels = array.new<label>()
+
+if barstate.islast and i_analysis_show and array.size(analysis_data) > 0
+
+    if (array.size(a_line) > 0)
+        for i = 0 to array.size(a_line) - 1
+            line.delete(array.shift(a_line))
+    
+    if (array.size(a_labels) > 0)
+        for i = 0 to array.size(a_labels) - 1
+            label.delete(array.shift(a_labels))
+
+    hightAdj = oscHeight / oscHighest
+
+    rank        = array.percentile_nearest_rank(analysis_data, i_rank_level)
+    stdev       = array.stdev(analysis_data)
+
+    stdev_xs    = stdev * i_stdev_xs
+    stdev_s     = stdev * i_stdev_s
+    stdev_l     = stdev * i_stdev_l
+    
+    if i_analysis_asc
+        array.sort(analysis_data, order.ascending)
+
+    array.push(a_line, line.new(bar_index, oscTop,  bar_index - lookbackLength, oscTop,  width=1, color=color.new(color.blue, 75)))
+    array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
+    array.push(a_line, line.new(bar_index, oscBottom,  bar_index - lookbackLength, oscBottom,  width=1))
+    array.push(a_line, line.new(bar_index, oscBottom + (rank     * hightAdj), bar_index - lookbackLength, oscBottom + (rank     * hightAdj), style=line.style_dotted, width=1, color=color.new(color.orange, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev_xs * hightAdj), bar_index - lookbackLength, oscBottom + (stdev_xs * hightAdj), style=line.style_dotted, width=1, color=color.new(color.purple, 30)))
+    array.push(a_line, line.new(bar_index, oscBottom + (stdev_l  * hightAdj), bar_index - lookbackLength, oscBottom + (stdev_l  * hightAdj), style=line.style_dotted, width=1))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (rank     * hightAdj), 'Rank',     color=color.new(color.orange, 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (stdev_xs * hightAdj), 'Stdev XS', color=color.new(color.purple, 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+    array.push(a_labels, label.new(bar_index + 1, oscBottom + (stdev_l  * hightAdj), 'Stdev L' , color=color.new(color.blue  , 30), style=label.style_label_left, textcolor=color.white, size=size.tiny))
+
+    xc = int(math.avg(bar_index, bar_index - lookbackLength))
+    array.push(a_line, line.new(xc, oscBottom, xc, oscBottom + oscHeight, style=line.style_dotted))
+
+    for i = 0 to array.size(analysis_data) - 1
+        y2 = array.get(analysis_data, i)
+        color_bar   = y2 < (rank)   ? color.orange : y2 < (stdev) ? color.blue : color.from_gradient(50, 0, 100, color.blue, color.black)
+        color_bar  := y2 < stdev_xs ? color.purple : color_bar
+
+        array.push(a_line, line.new(bar_index - i, oscBottom, bar_index - i, oscBottom + (y2 * hightAdj), color=color.new(color_bar, 40), width=2) )
+
